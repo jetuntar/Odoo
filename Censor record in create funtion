@@ -1,0 +1,64 @@
+@api.model_create_multi
+    def create(self, vals_list):
+        CensorModel = self.env['hr.employee.censor']
+        for vals in vals_list:
+            if vals.get('user_id'):
+                user = self.env['res.users'].browse(vals['user_id'])
+                vals.update(self._sync_user(user, bool(vals.get('image_1920'))))
+                vals['name'] = vals.get('name', user.name)
+
+        additional_vals_list = []
+        for vals in vals_list:
+            censored_data = {}
+
+            for key, value in vals.items():
+                if key in CensorModel._get_fields():
+                    censor_vals_list = ['email', 'identification_id', 'place_of_birth', 'alamat', 'alamat_ktp',
+                                        'nama_npwp',
+                                        'alamat_npwp', 'npwp', 'phone', 'phone2', 'phone3', 'rekening_nama',
+                                        'no_rekening', 'religion',
+                                        'birthday', 'spouse_name', 'spouse_dob', 'children_name1', 'children_dob1',
+                                        'children_name2', 'children_dob2',
+                                        'children_name3', 'children_dob3', 'children_name4', 'children_dob4',
+                                        'children_name5', 'children_dob5',
+                                        'emergency_phone', 'emergency_phone2', 'kpj', 'mother']
+                    if key in censor_vals_list:
+                        if isinstance(value, bool):
+                            censored_data[key] = value
+                        elif isinstance(value, date or datetime):
+                            censored_date = value[:4] + '*' * 5 + value[9:]
+                            censored_data[key] = censored_date
+                        else:
+                            name_parts = value.split()
+                            censored_parts = [part[0] + '*' * (len(part) - 2) + part[-1] for part in name_parts]
+                            censored_data[key] = ' '.join(censored_parts)
+                    else:
+                        censored_data[key] = value
+
+            additional_vals_list.append(censored_data)
+        censor_records = CensorModel.create(additional_vals_list)
+        employees = super().create(vals_list)
+        if self.env.context.get('salary_simulation'):
+            return employees
+        employees.message_subscribe(employees.address_home_id.ids)
+        employee_departments = employees.department_id
+        if employee_departments:
+            self.env['mail.channel'].sudo().search([
+                ('subscription_department_ids', 'in', employee_departments.ids)
+            ])._subscribe_users_automatically()
+        onboarding_notes_bodies = {}
+        hr_root_menu = self.env.ref('hr.menu_hr_root')
+        for employee in employees:
+            # Launch onboarding plans
+            url = '/web#%s' % url_encode({
+                'action': 'hr.plan_wizard_action',
+                'active_id': employee.id,
+                'active_model': 'hr.employee',
+                'menu_id': hr_root_menu.id,
+            })
+            onboarding_notes_bodies[employee.id] = _(
+                '<b>Congratulations!</b> May I recommend you to setup an <a href="%s">onboarding plan?</a>',
+                url,
+            )
+        employees._message_log_batch(onboarding_notes_bodies)
+        return employees
