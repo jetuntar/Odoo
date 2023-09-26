@@ -1,0 +1,53 @@
+def write(self, vals):
+    if 'address_home_id' in vals:
+        account_id = vals.get('bank_account_id') or self.bank_account_id.id
+        if account_id:
+            self.env['res.partner.bank'].browse(account_id).partner_id = vals['address_home_id']
+        self.message_unsubscribe(self.address_home_id.ids)
+        self.message_subscribe([vals['address_home_id']])
+    if vals.get('user_id'):
+        # Update the profile pictures with user, except if provided
+        vals.update(self._sync_user(self.env['res.users'].browse(vals['user_id']),
+                                    (bool(self.image_1920))))
+    if 'work_permit_expiration_date' in vals:
+        vals['work_permit_scheduled_activity'] = False
+    res = super(HrEmployeePrivate, self).write(vals)
+
+    CensorModel = self.env['hr.employee.censor']
+    name = self.mapped('name')
+    censor_record = self.env['hr.employee.censor'].search([('name', 'in', name)])
+
+    for key, value in vals.items():
+        if key in CensorModel._get_fields():
+
+            censor_vals = ['email', 'identification_id', 'place_of_birth', 'alamat', 'alamat_ktp', 'nama_npwp',
+                           'alamat_npwp', 'npwp', 'phone', 'phone2', 'phone3', 'rekening_nama', 'no_rekening',
+                           'religion',
+                           'birthday', 'spouse_name', 'spouse_dob', 'children_name1', 'children_dob1',
+                           'children_name2', 'children_dob2',
+                           'children_name3', 'children_dob3', 'children_name4', 'children_dob4', 'children_name5',
+                           'children_dob5',
+                           'emergency_phone', 'emergency_phone2', 'kpj', 'mother']
+
+            if key in censor_vals:
+                if isinstance(value, bool):
+                    vals[key] = value
+                elif isinstance(value, date or datetime):
+                    censored_date = value[:4] + '*' * 5 + value[9:]
+                    vals[key] = censored_date
+                else:
+                    name_parts = value.split()
+                    censored_parts = [part[0] + '*' * (len(part) - 2) + part[-1] for part in name_parts]
+                    vals[key] = ' '.join(censored_parts)
+            else:
+                vals[key] = value
+
+    censor_record.write(vals)
+
+    if vals.get('department_id') or vals.get('user_id'):
+        department_id = vals['department_id'] if vals.get('department_id') else self[:1].department_id.id
+        # When added to a department or changing user, subscribe to the channels auto-subscribed by department
+        self.env['mail.channel'].sudo().search([
+            ('subscription_department_ids', 'in', department_id)
+        ])._subscribe_users_automatically()
+    return res
